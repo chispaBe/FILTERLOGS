@@ -1,0 +1,206 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>NextDNS – Visor avanzado</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/datatables.net-dt@1.13.6/css/jquery.dataTables.min.css">
+<style>
+body{font-family:Arial,Helvetica,sans-serif;background:#f5f7fa;margin:0;padding:1rem;}
+h1{margin:0 0 1rem;font-size:1.4rem}
+label{margin-right:.5rem}
+input[type=datetime-local],input[type=text]{padding:4px 6px;margin-right:10px}
+#status{margin-top:.5rem;font-weight:bold}
+img.fav{width:16px;height:16px;vertical-align:middle;margin-right:4px}
+.modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.6);align-items:center;justify-content:center;z-index:99}
+.modal-content{background:#fff;padding:1rem;max-height:90%;overflow:auto;width:95%;max-width:900px}
+.modal-close{float:right;cursor:pointer;font-weight:bold}
+</style>
+</head>
+<body>
+<h1>📊 Visor avanzado de logs NextDNS</h1>
+
+<input type="file" id="csvFile" accept=".csv">
+<br>
+<label>Desde: <input type="datetime-local" id="desde"></label>
+<label>Hasta: <input type="datetime-local" id="hasta"></label>
+<label>Dispositivo contiene: <input type="text" id="fDevice" placeholder="iPhone..."></label>
+<label>Dominio contiene: <input type="text" id="fDomain" placeholder="google..."></label>
+<button id="btnFiltrar">Filtrar</button>
+<br>
+<label>Zona horaria (compensar, horas): <input type="number" id="tzOffset" value="0" style="width:60px"></label>
+<span id="status"></span>
+
+<table id="tabla" class="display" style="width:100%;display:none;margin-top:1rem;">
+  <thead>
+    <tr><th>Fecha/Hora (local)</th><th>Dominio</th><th>Dispositivo</th><th>Acción</th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<!-- selector contexto -->
+<div class="modal" id="ctxModal">
+  <div class="modal-content">
+    <span class="modal-close" onclick="closeCtx()">&times;</span>
+    <h3 id="ctxTitle">Contexto</h3>
+    <label>Mostrar&nbsp;
+      <select id="ctxCount">
+        <option value="50">50</option>
+        <option value="100">100</option>
+        <option value="300">300</option>
+        <option value="500">500</option>
+      </select>
+      registros antes y después
+    </label>
+    <button onclick="renderContext()">Actualizar</button>
+    <table id="ctxTable" class="display" style="width:100%;margin-top:1rem;"><thead><tr><th>Fecha/Hora</th><th>Dominio</th><th>Dispositivo</th></tr></thead><tbody></tbody></table>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/datatables.net@1.13.6/js/jquery.dataTables.min.js"></script>
+
+<script>
+// tabla principal y datos
+let rawData=[], dt;
+
+// mapa de descripciones rápidas
+const descMap={
+  "google.com":"Buscador",
+  "youtube.com":"Vídeos",
+  "facebook.com":"Red social",
+  "instagram.com":"Fotos",
+  "netflix.com":"Streaming",
+  "tiktokcdn.com":"Vídeos cortos"
+};
+
+function getDesc(domain){
+  const root=domain.replace(/^www\./,'').split('.')[0];
+  for(const d in descMap){
+    if(domain.includes(d)) return descMap[d];
+  }
+  return root.charAt(0).toUpperCase()+root.slice(1);
+}
+
+function favicon(domain){
+  const d=domain.replace(/.*\.(.*\..*)/,'$1');
+  return `https://www.google.com/s2/favicons?domain=${d}&sz=32`;
+}
+
+function parseTimestamp(ts, offsetHours){
+  const d=new Date(ts);
+  // compensar
+  d.setUTCHours(d.getUTCHours()+offsetHours);
+  return d;
+}
+
+function formatDate(d){
+  return d.toISOString().replace('T',' ').substring(0,19);
+}
+
+function loadTable(datos){
+  if(dt){dt.clear().destroy();}
+  const tbody=document.querySelector('#tabla tbody');
+  tbody.innerHTML='';
+  datos.forEach((r,i)=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML=`
+      <td>${r.localTs}</td>
+      <td><img class="fav" src="${favicon(r.domain)}">${r.domain}<br><small>${getDesc(r.domain)}</small></td>
+      <td>${r.device}</td>
+      <td><button onclick="openCtx(${r.index})">Contexto</button></td>`;
+    tbody.appendChild(tr);
+  });
+  $('#tabla').show();
+  dt=$('#tabla').DataTable({
+    pageLength:10,
+    lengthMenu:[[10,25,50,100,300,500,1000],[10,25,50,100,300,500,1000]],
+    order:[[0,'asc']]
+  });
+}
+
+function filterData(){
+  if(rawData.length===0)return;
+  const tz=parseInt(document.getElementById('tzOffset').value)||0;
+  const desde=document.getElementById('desde').value;
+  const hasta=document.getElementById('hasta').value;
+  const dev=document.getElementById('fDevice').value.toLowerCase();
+  const dom=document.getElementById('fDomain').value.toLowerCase();
+
+  const out=rawData.filter(r=>{
+    if(desde && r.timestamp<new Date(desde).toISOString())return false;
+    if(hasta && r.timestamp>new Date(hasta).toISOString())return false;
+    if(dev && !r.device.toLowerCase().includes(dev))return false;
+    if(dom && !r.domain.toLowerCase().includes(dom))return false;
+    return true;
+  }).map(r=>{
+    const loc=parseTimestamp(r.timestamp,tz);
+    return {...r, localTs:formatDate(loc)};
+  });
+
+  document.getElementById('status').textContent=`Mostrando ${out.length} de ${rawData.length} registros`;
+  loadTable(out);
+}
+
+document.getElementById('csvFile').addEventListener('change',e=>{
+  const f=e.target.files[0];
+  if(!f)return;
+  Papa.parse(f,{
+    header:true,
+    skipEmptyLines:true,
+    complete:res=>{
+      rawData=res.data.map((r,idx)=>{
+        return {
+          index:idx,
+          timestamp:r.timestamp || r.time || r.date || r.timeStamp || '',
+          domain:(r.domain||r.root_domain||'').trim(),
+          device:(r.device_name||r.device||'').trim()
+        };
+      }).filter(x=>x.timestamp && x.domain);
+      document.getElementById('status').textContent=`Cargados ${rawData.length} registros. Ajusta filtros y pulsa Filtrar`;
+      filterData();
+    }
+  });
+});
+
+document.getElementById('btnFiltrar').addEventListener('click',filterData);
+
+// --------- contexto ----------
+function openCtx(idx){
+  document.getElementById('ctxModal').style.display='flex';
+  document.getElementById('ctxModal').dataset.row=idx;
+  renderContext();
+}
+function closeCtx(){
+  document.getElementById('ctxModal').style.display='none';
+}
+function renderContext(){
+  const idx=parseInt(document.getElementById('ctxModal').dataset.row);
+  const count=parseInt(document.getElementById('ctxCount').value);
+  const start=Math.max(0,idx-count);
+  const end=Math.min(rawData.length,idx+count+1);
+  const tz=parseInt(document.getElementById('tzOffset').value)||0;
+  const slice=rawData.slice(start,end).map(r=>{
+    const loc=parseTimestamp(r.timestamp,tz);
+    return {...r, localTs:formatDate(loc)};
+  });
+  const tbody=document.querySelector('#ctxTable tbody');
+  if($.fn.dataTable.isDataTable('#ctxTable')){
+    $('#ctxTable').DataTable().clear().destroy();
+  }
+  tbody.innerHTML='';
+  slice.forEach(r=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML=`
+      <td>${r.localTs}</td>
+      <td><img class="fav" src="${favicon(r.domain)}">${r.domain}</td>
+      <td>${r.device}</td>`;
+    tbody.appendChild(tr);
+  });
+  $('#ctxTable').DataTable({pageLength:25,lengthMenu:[[25,50,100,300,500],[25,50,100,300,500]]});
+  document.getElementById('ctxTitle').textContent=`Contexto de ±${count} registros (mostrar ${slice.length})`;
+}
+</script>
+</body>
+</html>
